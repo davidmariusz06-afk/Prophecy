@@ -38,6 +38,16 @@
   }
   body.theme-clean .card { background:#fff!important; border-color:rgba(0,0,0,.07)!important; box-shadow:0 1px 6px rgba(0,0,0,.06)!important; }
   body.theme-clean .nav-bar { background:rgba(255,255,255,.97)!important; border-color:rgba(0,0,0,.1)!important; }
+  body.theme-rome {
+    --bg:#0d0a00; --surface:rgba(212,175,55,.04); --border:rgba(212,175,55,.15);
+    --text:#f0e6c8; --muted:#7a6a3a; --iron:#1a1400;
+    --cyan:#d4af37; --green:#c8a96e; --yellow:#ffd700; --pink:#c0392b; --orange:#e8890c; --purple:#8b7355;
+  }
+  body.theme-rome .card { background:rgba(212,175,55,.04)!important; border-color:rgba(212,175,55,.18)!important; }
+  body.theme-rome .card-title { color:#d4af37!important; letter-spacing:.1em!important; }
+  body.theme-rome .nav-bar { background:rgba(13,10,0,.96)!important; border-color:rgba(212,175,55,.2)!important; }
+  body.theme-rome .btn { border-color:rgba(212,175,55,.3)!important; }
+  body.theme-rome body::after { content:''; position:fixed; inset:0; pointer-events:none; background: repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(212,175,55,.015) 40px,rgba(212,175,55,.015) 41px); z-index:0; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; min-height: 100vh; overflow-x: hidden; font-size: 14px; }
 
@@ -415,7 +425,7 @@ const DEFAULTS = { useKg:false, showTrueWeight:true, showSpikes:true, showLocked
 let settings = {...DEFAULTS};
 try { const s=localStorage.getItem('prophecy_settings'); if(s) settings={...DEFAULTS,...JSON.parse(s)}; } catch(e){}
 function applyTheme(name) {
-  const themes = ['neon','military','blood','clean'];
+  const themes = ['neon','military','blood','clean','rome'];
   document.body.classList.remove(...themes.map(t => 'theme-'+t));
   if (themes.includes(name)) document.body.classList.add('theme-'+name);
 }
@@ -2396,6 +2406,7 @@ function renderSettingsPanel() {
     {key:'military', label:'Military',    bg:'#0a0d06', accent:'#7fb069', textCol:'#c8d4b0'},
     {key:'blood',    label:'Blood Sport', bg:'#060003', accent:'#ff0033', textCol:'#f5e8e8'},
     {key:'clean',    label:'Clean',       bg:'#f0f0f5', accent:'#007aff', textCol:'#1a1a2e'},
+    {key:'rome',     label:'Rome',         bg:'#0d0a00', accent:'#d4af37', textCol:'#f0e6c8'},
   ];
   const cur = settings.theme || 'original';
   return `<div class="settings-panel" id="settingsPanel">
@@ -2682,7 +2693,7 @@ function renderCharts() {
         <div style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;margin-bottom:4px">
           <div style="height:100%;width:${Math.min(100,progress.pct)}%;background:${u.color};border-radius:4px;transition:width .6s ease"></div>
         </div>
-        <div style="font-size:11px;color:#555">${progress.pct.toFixed(1)}% to goal · ${progress.remaining.toFixed(1)} lbs remaining${atl ? ' · ATL ' + atl.weight + ' lbs' : ''}</div>` : ''}
+        <div style="font-size:11px;color:#555">${progress.pct.toFixed(1)}% to goal · ${parseFloat(progress.toGoal).toFixed(1)} lbs remaining${atl ? ' · ATL ' + atl.weight + ' lbs' : ''}</div>` : ''}
       </div>`;
     }).join('')}
 
@@ -3468,6 +3479,7 @@ function renderOverlayChart() {
       </div>
     </div>
     <canvas id="overlayChart" style="max-height:320px"></canvas>
+    <button onclick="window.openFullscreenChart('overlayChart','Weight Overlay')" title="Fullscreen" style="margin-top:8px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);color:#666;padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer">⛶ Fullscreen</button>
   </div>`;
 }
 
@@ -3477,6 +3489,7 @@ function renderIndividualCharts() {
   return withData.map(u2 => `<div class="card" style="margin-bottom:16px;border-color:${u2.color}22">
     <div class="card-title"><span style="width:10px;height:10px;background:${u2.color};border-radius:50%;display:inline-block"></span> ${u2.name}
       <span style="margin-left:auto;font-size:11px;color:#555">${u2.entries.length} entries</span>
+      <button onclick="window.openFullscreenChart('split-chart-${u2.id}','${u2.name} — Weight')" title="Fullscreen" style="margin-left:8px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);color:#666;padding:2px 7px;border-radius:4px;font-size:11px;cursor:pointer">⛶</button>
     </div>
     <canvas id="split-chart-${u2.id}" style="max-height:240px"></canvas>
   </div>`).join('');
