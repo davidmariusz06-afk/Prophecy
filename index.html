@@ -448,6 +448,9 @@ window.toggleSetting = function(key) {
   const panel = document.getElementById('settingsPanel');
   if (panel) panel.outerHTML = renderSettingsPanel();
 };
+window.setTheme = function(name) {
+  saveSetting('theme', name);
+};
 
 // ── UNIT HELPERS ──────────────────────────────────────────
 function lbs(v) { if(!v && v!==0) return null; return settings.useKg ? parseFloat((v/2.2046).toFixed(1)) : v; }
@@ -2401,7 +2404,7 @@ function renderSettingsPanel() {
     <div style="margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--border)">
       <div style="font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px">App Theme</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        ${THEMES.map(t => `<button onclick="saveSetting('theme','${t.key}')"
+        ${THEMES.map(t => `<button onclick="window.setTheme('${t.key}')"
           style="padding:7px 13px;border-radius:8px;border:2px solid ${cur===t.key?t.accent:'rgba(255,255,255,0.1)'};
                  background:${t.bg};color:${t.textCol};font-family:'DM Mono',monospace;font-size:10px;cursor:pointer;
                  ${cur===t.key?'box-shadow:0 0 10px '+t.accent+'55;':''}"
@@ -2500,54 +2503,6 @@ function getDynamicStandards(liftKey, bodyweightLbs) {
 }
 
 // ── MONTE CARLO PROJECTION ─────────────────────────────────
-function runMonteCarlo(u, simCount=200) {
-  if (!u.goalWeight || !u.entries || u.entries.length < 3) return null;
-  const tw = calcTrueWeight(u.entries);
-  if (tw.length < 3) return null;
-  // Compute weekly deltas from true weight
-  const sorted = [...tw].sort((a,b)=>a.date.localeCompare(b.date));
-  const weeklyDeltas = [];
-  for (let i=1; i<sorted.length; i++) {
-    const d = (new Date(sorted[i].date)-new Date(sorted[i-1].date))/864e5;
-    if (d > 0) weeklyDeltas.push((sorted[i].weight - sorted[i-1].weight)/(d/7));
-  }
-  if (weeklyDeltas.length < 2) return null;
-  const meanDelta = weeklyDeltas.reduce((s,v)=>s+v,0)/weeklyDeltas.length;
-  const variance = weeklyDeltas.reduce((s,v)=>s+(v-meanDelta)**2,0)/weeklyDeltas.length;
-  const stdDev = Math.sqrt(variance);
-  const currentWeight = sorted[sorted.length-1].weight;
-  const startDate = new Date();
-  const weeks = 52; // project 1 year forward
-
-  // Run simulations
-  const allPaths = [];
-  for (let s=0; s<simCount; s++) {
-    let w = currentWeight;
-    const path = [w];
-    for (let wk=0; wk<weeks; wk++) {
-      // Box-Muller for normal distribution
-      const u1=Math.random(), u2=Math.random();
-      const z = Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
-      w += meanDelta + z*stdDev;
-      path.push(parseFloat(w.toFixed(1)));
-    }
-    allPaths.push(path);
-  }
-
-  // Compute percentile bands at each week
-  const p10=[], p25=[], p50=[], p75=[], p90=[];
-  for (let wk=0; wk<=weeks; wk++) {
-    const vals = allPaths.map(p=>p[wk]).sort((a,b)=>a-b);
-    const pct = (p) => vals[Math.floor(p/100*vals.length)];
-    p10.push(pct(10)); p25.push(pct(25)); p50.push(pct(50)); p75.push(pct(75)); p90.push(pct(90));
-  }
-  const labels = Array.from({length:weeks+1},(_,i)=>{
-    const d=new Date(); d.setDate(d.getDate()+i*7);
-    return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
-  });
-  return { labels, p10, p25, p50, p75, p90, meanDelta: meanDelta.toFixed(2), stdDev: stdDev.toFixed(2) };
-}
-
 // ── VELOCITY / MOMENTUM CHART ──────────────────────────────
 function calcWeeklyVelocity(u) {
   const tw = calcTrueWeight(u.entries);
@@ -2635,27 +2590,99 @@ function renderCharts() {
     <div class="card" style="margin-bottom:16px">
       <div class="card-title"><span class="card-title-icon">⚡</span>Momentum — Weekly Rate of Change
         <span style="margin-left:auto;font-size:11px;color:#555">Positive = gaining, negative = losing</span>
+        ${usersWithData.length ? `<button onclick="window.openFullscreenChart('velocityChart','Momentum — Weekly Rate of Change')" title="Fullscreen" style="margin-left:8px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);color:#666;padding:2px 7px;border-radius:4px;font-size:11px;cursor:pointer">⛶</button>` : ''}
       </div>
       <div style="font-size:12px;color:#555;margin-bottom:12px">Shows acceleration or stalling — flat line means stuck, steep drop means fast loss.</div>
       ${usersWithData.length ? `<canvas id="velocityChart" style="max-height:300px"></canvas>` : `<div style="color:#444;text-align:center;padding:20px">Need 3+ entries per athlete.</div>`}
     </div>
 
-    <!-- MONTE CARLO -->
+    <!-- CONSISTENCY REPORT (replaces Monte Carlo) -->
     ${usersWithData.map(u => {
-      const mc = runMonteCarlo(u);
-      if (!mc) return '';
+      const tw = calcTrueWeight(u.entries);
+      if (tw.length < 3) return '';
+      const streak = calcStreak(u);
+      const rol = calcRateOfLoss(u);
+      const atl = getAllTimeLow(u);
+      const progress = calcProgress(u);
+      const sorted = [...u.entries].sort((a,b)=>a.date.localeCompare(b.date));
+      const totalDays = Math.round((new Date(sorted[sorted.length-1].date) - new Date(sorted[0].date)) / 864e5);
+      const consistencyPct = totalDays > 0 ? Math.round((u.entries.length / totalDays) * 100) : 0;
+
+      // Weekly weigh-in counts over last 8 weeks
+      const today = new Date();
+      const weekBuckets = Array.from({length:8}, (_,i) => {
+        const wkEnd = new Date(today); wkEnd.setDate(today.getDate() - i*7);
+        const wkStart = new Date(wkEnd); wkStart.setDate(wkEnd.getDate() - 7);
+        const count = u.entries.filter(e => {
+          const d = new Date(e.date+'T00:00:00');
+          return d >= wkStart && d < wkEnd;
+        }).length;
+        return { label: wkStart.toLocaleDateString('en-US',{month:'short',day:'numeric'}), count };
+      }).reverse();
+      const maxWkCount = Math.max(1, ...weekBuckets.map(w => w.count));
+
+      // Best 4-week stretch
+      let bestStretch = 0;
+      for (let i=0; i<=u.entries.length-4; i++) {
+        const window4 = u.entries.slice(i, i+4);
+        const span = (new Date(window4[3].date) - new Date(window4[0].date)) / 864e5;
+        if (span <= 28) bestStretch = Math.max(bestStretch, 4);
+      }
+
+      // Trend: 8-week change in true weight
+      const twRecent = tw.slice(-56);
+      const trendChange = twRecent.length >= 2 ? (twRecent[twRecent.length-1].weight - twRecent[0].weight).toFixed(1) : null;
+
       return `<div class="card" style="margin-bottom:16px;border-color:${u.color}22">
-        <div class="card-title"><span class="card-title-icon">🔮</span>${u.name} — Monte Carlo Projection (1 Year)
-          <span style="margin-left:auto;font-size:11px;color:#555">μ=${mc.meanDelta} lbs/wk · σ=${mc.stdDev}</span>
+        <div class="card-title"><span class="card-title-icon">📋</span>${u.name} — Consistency Report</div>
+
+        <!-- Stat row -->
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+          <div style="flex:1;min-width:90px;background:rgba(255,255,255,0.03);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:32px;color:${u.color};line-height:1">${streak}</div>
+            <div style="font-size:10px;color:#555;margin-top:3px">day streak</div>
+          </div>
+          <div style="flex:1;min-width:90px;background:rgba(255,255,255,0.03);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:32px;color:${u.color};line-height:1">${u.entries.length}</div>
+            <div style="font-size:10px;color:#555;margin-top:3px">total weigh-ins</div>
+          </div>
+          <div style="flex:1;min-width:90px;background:rgba(255,255,255,0.03);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:32px;color:${consistencyPct>=50?u.color:'#ff6b2b'};line-height:1">${consistencyPct}%</div>
+            <div style="font-size:10px;color:#555;margin-top:3px">check-in rate</div>
+          </div>
+          ${rol && parseFloat(rol.perWeek) > 0 ? `<div style="flex:1;min-width:90px;background:rgba(255,255,255,0.03);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:32px;color:#69ff47;line-height:1">${rol.perWeek}</div>
+            <div style="font-size:10px;color:#555;margin-top:3px">lbs/week avg</div>
+          </div>` : ''}
+          ${trendChange !== null ? `<div style="flex:1;min-width:90px;background:rgba(255,255,255,0.03);border-radius:6px;padding:10px;text-align:center">
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:32px;color:${parseFloat(trendChange)<0?'#69ff47':'#ff6b2b'};line-height:1">${parseFloat(trendChange)<0?'':'+'}${trendChange}</div>
+            <div style="font-size:10px;color:#555;margin-top:3px">8-wk true wt change</div>
+          </div>` : ''}
         </div>
-        <div style="font-size:12px;color:#555;margin-bottom:12px">200 simulated futures based on your actual variance. Darker band = more likely.</div>
-        <canvas id="monte-${u.id}" style="max-height:300px"></canvas>
-        ${u.goalWeight ? `<div style="font-size:11px;color:#555;margin-top:8px">Goal weight: <strong style="color:${u.color}">${u.goalWeight} lbs</strong> — shown as dashed line</div>` : ''}
-        <div class="monte-legend">
-          <span><span class="monte-swatch" style="background:${u.color}33;height:10px;width:20px;border-radius:2px;display:inline-block"></span> 10–90th pct</span>
-          <span><span class="monte-swatch" style="background:${u.color}66"></span> 25–75th pct</span>
-          <span><span class="monte-swatch" style="background:${u.color}cc"></span> Median</span>
+
+        <!-- Weekly check-in bar chart -->
+        <div style="font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Weigh-ins per week (last 8 weeks)</div>
+        <div style="display:flex;align-items:flex-end;gap:4px;height:60px;margin-bottom:4px">
+          ${weekBuckets.map(w => {
+            const h = Math.round((w.count / maxWkCount) * 100);
+            const col = w.count === 0 ? 'rgba(255,255,255,0.05)' : w.count >= 5 ? u.color : w.count >= 3 ? u.color+'99' : u.color+'55';
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px">
+              <div style="font-size:9px;color:${w.count?u.color:'#333'}">${w.count||''}</div>
+              <div style="width:100%;height:${Math.max(4,h)}%;background:${col};border-radius:3px 3px 0 0;transition:height .3s"></div>
+            </div>`;
+          }).join('')}
         </div>
+        <div style="display:flex;gap:4px;margin-bottom:16px">
+          ${weekBuckets.map(w => `<div style="flex:1;font-size:8px;color:#333;text-align:center;overflow:hidden">${w.label}</div>`).join('')}
+        </div>
+
+        ${progress && progress.pct > 0 ? `
+        <!-- Goal progress -->
+        <div style="font-size:10px;color:#555;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Goal progress</div>
+        <div style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;margin-bottom:4px">
+          <div style="height:100%;width:${Math.min(100,progress.pct)}%;background:${u.color};border-radius:4px;transition:width .6s ease"></div>
+        </div>
+        <div style="font-size:11px;color:#555">${progress.pct.toFixed(1)}% to goal · ${progress.remaining.toFixed(1)} lbs remaining${atl ? ' · ATL ' + atl.weight + ' lbs' : ''}</div>` : ''}
       </div>`;
     }).join('')}
 
@@ -2669,7 +2696,6 @@ function renderCharts() {
           const stds = getDynamicStandards(lift.key, curW);
           const pr = getLiftPR(u, lift.key);
           if (!stds) return '';
-          // Find which level they're at
           let curLevel = -1;
           if (pr) { stds.forEach((s,i)=>{ if(pr.weight>=s.weight) curLevel=i; }); }
           const nextStd = stds[curLevel+1];
@@ -2704,12 +2730,10 @@ function renderCharts() {
 
     const vcCtx = document.getElementById('velocityChart');
     if (vcCtx && usersWithData.length) {
-      // Get all dates across users
       const allDates = [...new Set(usersWithData.flatMap(u=>u.entries.map(e=>e.date)))].sort();
       const datasets = usersWithData.map(u => {
         const vel = calcWeeklyVelocity(u);
         if (!vel) return null;
-        // Map velocity to a date-indexed lookup
         const velMap = {};
         vel.forEach(v => { velMap[v.date]=v.roc; });
         return {
@@ -2736,41 +2760,9 @@ function renderCharts() {
         }
       });
     }
-
-    // Render Monte Carlo charts
-    usersWithData.forEach(u => {
-      const ctx = document.getElementById('monte-'+u.id);
-      if (!ctx) return;
-      const mc = runMonteCarlo(u);
-      if (!mc) return;
-      const datasets = [
-        // Outer band (p10-p90) — very transparent fill
-        { label:'10–90%', data:mc.p90, borderColor:'transparent', backgroundColor:u.color+'22', fill:'+1', tension:0.4, pointRadius:0 },
-        { label:'', data:mc.p10, borderColor:'transparent', backgroundColor:'transparent', fill:false, tension:0.4, pointRadius:0 },
-        // Inner band (p25-p75)
-        { label:'25–75%', data:mc.p75, borderColor:'transparent', backgroundColor:u.color+'44', fill:'+1', tension:0.4, pointRadius:0 },
-        { label:'', data:mc.p25, borderColor:'transparent', backgroundColor:'transparent', fill:false, tension:0.4, pointRadius:0 },
-        // Median
-        { label:'Median', data:mc.p50, borderColor:u.color, backgroundColor:'transparent', borderWidth:2, tension:0.4, pointRadius:0, fill:false },
-      ];
-      if (u.goalWeight) {
-        datasets.push({ label:'Goal', data:Array(mc.labels.length).fill(u.goalWeight), borderColor:'rgba(255,255,255,0.3)', backgroundColor:'transparent', borderWidth:1, borderDash:[4,4], pointRadius:0, fill:false });
-      }
-      new Chart(ctx, {
-        type:'line',
-        data:{ labels:mc.labels, datasets },
-        options:{
-          plugins:{ legend:{ display:false } },
-          scales:{
-            x:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#555',font:{family:'DM Mono',size:10},maxTicksLimit:8}},
-            y:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#555',font:{family:'DM Mono',size:10},callback:v=>settings.useKg?lbs(v)+' kg':v+' lbs'}}
-          },
-          responsive:true, maintainAspectRatio:true,
-        }
-      });
-    });
   }, 50);
 }
+
 
 // ── EDIT ACHIEVEMENTS (manual override) ───────────────────
 // Save any field of a custom badge override
