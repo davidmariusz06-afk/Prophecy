@@ -460,7 +460,7 @@ let currentView = "dashboard";
 let compareStartDate = "", compareEndDate = "";
 
 // ── SETTINGS (persisted to localStorage) ──────────────────
-const DEFAULTS = { showTrueWeight:true, showSpikes:true, showLockedBadges:false, darkMode:true, theme:'original', consistencyWeeks:8 };
+const DEFAULTS = { showTrueWeight:true, showSpikes:true, showLockedBadges:false, showRestDays:true, darkMode:true, theme:'original', consistencyWeeks:8 };
 let settings = {...DEFAULTS};
 try { const s=localStorage.getItem('prophecy_settings'); if(s) settings={...DEFAULTS,...JSON.parse(s)}; } catch(e){}
 function applyTheme(name) {
@@ -475,7 +475,7 @@ function saveSetting(key, val) {
   try { localStorage.setItem('prophecy_settings', JSON.stringify(settings)); } catch(e) {}
   if (key === 'theme') { applyTheme(val); renderAll(); return; }
   // Don't call renderAll — re-render only what changed to avoid destroying toggle DOM state
-  if (key === 'showTrueWeight' || key === 'showSpikes') {
+  if (key === 'showTrueWeight' || key === 'showSpikes' || key === 'showRestDays') {
     if (currentView === 'dashboard' && activeUserId) {
       const u = users.find(x => x.id === activeUserId);
       if (u && u.entries.length > 1) {
@@ -594,36 +594,33 @@ const LIFT_BW_MULTIPLIERS = {
   deadlift: [1.00, 1.50, 2.00, 2.50, 3.00],
   ohp:      [0.35, 0.55, 0.80, 1.10, 1.40],
 };
-function getStrengthPercentile(liftKey, liftWeight, bodyweight) {
+// Direct tier classification — returns {label, color, tierIdx, pctOfNext}
+// Tier = highest standard the lifter has reached (0=below Beginner, 1=Beginner, ..., 5=Elite)
+const TIER_LABELS  = ['Beginner','Novice','Intermediate','Advanced','Elite'];
+const TIER_COLORS  = ['#888','#ff6b2b','#ffe040','#00e5ff','#69ff47'];
+function getLiftTier(liftKey, liftWeight, bodyweight) {
   const mults = LIFT_BW_MULTIPLIERS[liftKey];
-  if (!mults || !liftWeight) return null;
-  const bw = bodyweight || 185;
-  const pts = [
-    {p:0,  w:0},
-    {p:15, w:mults[0]*bw},
-    {p:35, w:mults[1]*bw},
-    {p:55, w:mults[2]*bw},
-    {p:80, w:mults[3]*bw},
-    {p:95, w:mults[4]*bw},
-    {p:99, w:mults[4]*bw*1.15},
-  ];
-  for (let i=1; i<pts.length; i++) {
-    if (liftWeight <= pts[i].w) {
-      const frac = (liftWeight - pts[i-1].w) / (pts[i].w - pts[i-1].w);
-      return Math.round(pts[i-1].p + frac*(pts[i].p-pts[i-1].p));
-    }
+  if (!mults || !liftWeight || !bodyweight) return null;
+  // Find highest standard met
+  let tierIdx = -1; // -1 = below Beginner
+  for (let i = 0; i < mults.length; i++) {
+    if (liftWeight >= mults[i] * bodyweight) tierIdx = i;
   }
-  return 99;
+  const label = tierIdx < 0 ? 'Sub-Beginner' : TIER_LABELS[tierIdx];
+  const color = tierIdx < 0 ? '#444' : TIER_COLORS[tierIdx];
+  // Progress toward next tier (for bar display)
+  const prevMult = tierIdx < 0 ? 0 : mults[tierIdx];
+  const nextMult = tierIdx < mults.length - 1 ? mults[tierIdx + 1] : null;
+  const prevW = prevMult * bodyweight;
+  const nextW = nextMult ? nextMult * bodyweight : null;
+  const pctOfNext = nextW ? Math.round(((liftWeight - prevW) / (nextW - prevW)) * 100) : 100;
+  const toNext = nextW ? Math.round(nextW - liftWeight) : 0;
+  const nextLabel = tierIdx < TIER_LABELS.length - 1 ? TIER_LABELS[tierIdx + 1] : null;
+  return { label, color, tierIdx, pctOfNext: Math.max(0, Math.min(100, pctOfNext)), toNext, nextLabel, nextW: nextW ? Math.round(nextW) : null };
 }
-function strengthLabel(pct) {
-  // Boundaries: hitting exactly a standard's percentile = that label
-  if (pct <= 15) return { label:'Beginner',     color:'#666' };
-  if (pct <= 35) return { label:'Novice',        color:'#ff6b2b' };
-  if (pct <= 55) return { label:'Intermediate',  color:'#ffe040' };
-  if (pct <= 80) return { label:'Advanced',      color:'#00e5ff' };
-  if (pct <= 95) return { label:'Elite',         color:'#69ff47' };
-  return { label:'World Class', color:'#c77dff' };
-}
+// Keep legacy name for any callers
+function getStrengthPercentile(liftKey, liftWeight, bodyweight) { return getLiftTier(liftKey,liftWeight,bodyweight); }
+function strengthLabel(x) { return x; } // identity — getLiftTier already returns {label,color}
 
 // ── FIREBASE ───────────────────────────────────────────────
 function initFirebase(config) {
@@ -1052,6 +1049,24 @@ function renderAthleteChart(u) {
     datasets.push({ label:'True Weight', data: sorted.map(e=>twMap[e.date]??null),
       borderColor:'#33aaff', backgroundColor:'transparent', borderWidth:2,
       borderDash:[6,4], pointRadius:0, fill:false, tension:0.3, spanGaps:true });
+  }
+  if (settings.showRestDays) {
+    const restSet = new Set((trainingSessions[u.id]||[]).filter(s=>s.type==='rest').map(s=>s.date));
+    if (restSet.size > 0) {
+      const restData = sorted.map(e => restSet.has(e.date) ? e.weight : null);
+      datasets.push({
+        label: 'Rest Day',
+        data: restData,
+        type: 'scatter',
+        pointStyle: 'triangle',
+        pointRadius: sorted.map(e => restSet.has(e.date) ? 8 : 0),
+        pointBackgroundColor: '#69ff4788',
+        pointBorderColor: '#69ff47',
+        pointBorderWidth: 1.5,
+        showLine: false,
+        fill: false,
+      });
+    }
   }
   new Chart(ctx, {
     type:'line',
@@ -1746,18 +1761,17 @@ function renderLifting() {
           <div class="lift-card-label" style="color:${lift.color}99">${lift.label}</div>
           ${pr
             ? (() => {
-                const pct = getStrengthPercentile(lift.key, pr.weight, currentWeight);
-                const lvl = pct !== null ? strengthLabel(pct) : null;
+                const tier = getLiftTier(lift.key, pr.weight, currentWeight);
                 const dispW = pr.weight;
                 return `<div class="lift-card-val" style="color:${lift.color}">${dispW}<span class="lift-card-unit">${wUnit()}</span></div>
                <div class="lift-card-date">${fmtDate(pr.date)}</div>
-               ${rel ? `<div style="font-size:11px;color:#555;margin-top:3px">${rel}x bodyweight</div>` : ""}
-               ${pct !== null ? `<div style="margin-top:8px">
+               ${rel ? `<div style="font-size:11px;color:#555;margin-top:3px">${rel}x BW</div>` : ""}
+               ${tier ? `<div style="margin-top:8px">
                  <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px">
-                   <span style="color:${lvl.color};font-weight:500">${lvl.label}</span>
-                   <span style="color:#555">Top ${100-pct}%</span>
+                   <span style="color:${tier.color};font-weight:600">${tier.label}</span>
+                   <span style="color:#555">${tier.nextLabel ? tier.toNext+' lbs to '+tier.nextLabel : '🏆 Elite'}</span>
                  </div>
-                 <div class="pct-bar"><div class="pct-fill" style="width:${pct}%;background:${lvl.color}88"></div></div>
+                 <div class="pct-bar"><div class="pct-fill" style="width:${tier.pctOfNext}%;background:${tier.color}88"></div></div>
                </div>` : ""}
                ${delta !== null ? `<div class="lift-card-delta" style="color:${delta>=0?'#69ff47':'#ff4d8d'}">${delta>0?'+':''}${delta} lbs from prev</div>` : ""}`;
               })()
@@ -2463,7 +2477,7 @@ function goalPredictionWidget(u) {
   const phaseVerb = u.phase === 'bulk' ? 'gain' : 'lose';
   return `<div class="card" style="border-color:rgba(255,224,64,0.2);background:rgba(255,224,64,0.03);margin-bottom:16px">
     <div class="card-title"><span class="card-title-icon">🎯</span>Goal Prediction
-      <span style="margin-left:auto;font-size:11px;color:#555">Based on true weight (7-day avg)</span>
+      <span style="margin-left:auto;font-size:11px;color:#555">Based on recent true weight trend (~4 wks)</span>
     </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
       <div style="flex:1;min-width:140px;background:rgba(255,224,64,0.07);border:1px solid rgba(255,224,64,0.2);border-radius:8px;padding:14px">
@@ -2510,6 +2524,10 @@ function renderWeightChart(u) {
         <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:11px;color:#555;text-transform:none;letter-spacing:0;cursor:pointer">
           <input type="checkbox" ${settings.showSpikes?'checked':''} onchange="window.saveSetting('showSpikes',this.checked)" style="width:auto">
           <span>💧 Spikes</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;font-size:11px;color:#555;text-transform:none;letter-spacing:0;cursor:pointer">
+          <input type="checkbox" ${settings.showRestDays?'checked':''} onchange="window.saveSetting('showRestDays',this.checked)" style="width:auto">
+          <span style="color:#69ff47">🛌 Rest</span>
         </label>
       </div>
     </div>
@@ -2867,31 +2885,37 @@ function renderCharts() {
       const usersWithT = users.filter(u => (trainingSessions[u.id]||[]).length > 0);
       if (!usersWithT.length) return '';
       return usersWithT.map(u => {
-        const sessions = getUserSessions(u.id);
-        const exCount = {};
+        const sessions = getUserSessions(u.id).filter(s => s.type !== 'rest');
+        // Count SETS per exercise (not session appearances)
+        const exSets = {}, exSessions = {};
         sessions.forEach(s => {
-          const seen = new Set();
+          const seenThisSession = new Set();
           (s.exercises||[]).forEach(ex => {
             if (!ex.name) return;
             const name = ex.name.trim();
-            if (!seen.has(name)) { exCount[name]=(exCount[name]||0)+1; seen.add(name); }
+            const workSets = (ex.sets||[]).filter(st => (st.weight||0) > 0 || (st.reps||0) > 0);
+            exSets[name] = (exSets[name]||0) + workSets.length;
+            if (!seenThisSession.has(name)) { exSessions[name]=(exSessions[name]||0)+1; seenThisSession.add(name); }
           });
         });
-        const top = Object.entries(exCount).sort((a,b)=>b[1]-a[1]).slice(0,12);
+        const top = Object.entries(exSets).sort((a,b)=>b[1]-a[1]).slice(0,12);
         if (!top.length) return '';
-        const maxC = top[0][1];
+        const maxSets = top[0][1];
         return '<div class="card" style="margin-bottom:16px">' +
-          '<div class="card-title"><span class="card-title-icon">📅</span>' + u.name + ' — Lift Frequency' +
-          '<span style="margin-left:auto;font-size:11px;color:#555">' + sessions.length + ' sessions total</span></div>' +
-          top.map(([name, count]) => {
-            const pctBar = Math.round((count/maxC)*100);
-            const pctSess = Math.round((count/sessions.length)*100);
+          '<div class="card-title"><span class="card-title-icon">📊</span>' + u.name + ' — Exercise Volume (Sets)' +
+          '<span style="margin-left:auto;font-size:11px;color:#555">' + sessions.length + ' sessions</span></div>' +
+          top.map(([name, sets]) => {
+            const sessCount = exSessions[name] || 0;
+            const avgSets = sessCount ? (sets/sessCount).toFixed(1) : '0';
+            const pctBar = Math.round((sets/maxSets)*100);
+            const pctSess = Math.round((sessCount/Math.max(sessions.length,1))*100);
             const col = pctSess>=66 ? u.color : pctSess>=33 ? u.color+'bb' : u.color+'66';
-            return '<div style="margin-bottom:8px">' +
+            return '<div style="margin-bottom:10px">' +
               '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">' +
               '<span style="font-size:12px;flex:1;color:var(--text)">' + name + '</span>' +
-              '<span style="font-size:11px;color:#555">' + count + '/' + sessions.length + '</span>' +
-              '<span style="font-size:11px;color:' + col + ';min-width:34px;text-align:right">' + pctSess + '%</span></div>' +
+              '<span style="font-size:10px;color:#444">' + sets + ' sets</span>' +
+              '<span style="font-size:10px;color:#333;margin-left:6px">(' + avgSets + '/session)</span>' +
+              '<span style="font-size:10px;color:' + col + ';margin-left:6px;min-width:28px;text-align:right">' + pctSess + '% freq</span></div>' +
               '<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">' +
               '<div style="height:100%;width:' + pctBar + '%;background:' + col + ';border-radius:3px"></div>' +
               '</div></div>';
@@ -3939,6 +3963,7 @@ function mountIndividualCharts() {
 // }
 
 let trainingSessions = {};   // userId -> [session, ...]
+let volRangeWeeks = 8;       // volume tab history window, controlled by range buttons
 let trainingListening = false;
 
 // ── MUSCLE GROUP MAP ──────────────────────────────────────────
@@ -4237,6 +4262,10 @@ let selectedExercise = null;      // exercise name for drill-down
 let editingSessionId = null;      // session being edited
 let exRangeWeeks = 0;             // 0 = all time, otherwise # of weeks
 
+window.setVolRange = function(w) {
+  volRangeWeeks = w;
+  renderTraining();
+};
 window.setTrainingTab = function(tab) { trainingSubTab = tab; selectedExercise = null; renderTraining(); };
 window.selectExercise = function(name) { selectedExercise = name; trainingSubTab = 'exercises'; renderTraining(); };
 window.setExRange = function(weeks) { exRangeWeeks = parseInt(weeks); renderTraining(); };
@@ -4270,7 +4299,7 @@ function renderTraining() {
       <div style="width:10px;height:36px;background:${u.color};border-radius:2px"></div>
       <div>
         <div style="font-family:'Bebas Neue',sans-serif;font-size:28px;letter-spacing:0.05em;line-height:1">${u.name} — Training</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">${sessions.length} sessions logged</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${sessions.filter(s=>s.type!=='rest').length} sessions · ${sessions.filter(s=>s.type==='rest').length} rest days</div>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px">
         ${sessions.length ? `<button class="btn btn-sm btn-ghost" onclick="window.copyLastSession('${u.id}')">⎘ Copy Last</button>` : ''}
@@ -4867,7 +4896,7 @@ function renderVolumeTab(u) {
   const allWeeks = Object.keys(weeklyVol).sort();
   if (!allWeeks.length) return `<div style="color:#444;text-align:center;padding:40px">No data yet. Log some sessions first.</div>`;
 
-  const volRangeWeeks = parseInt(document.getElementById('vol-range')?.value || 8);
+  // volRangeWeeks is module-level, set by window.setVolRange
   const weeks = allWeeks.slice(-volRangeWeeks);
 
   // Most recent week with data (may not be current calendar week)
@@ -4884,9 +4913,9 @@ function renderVolumeTab(u) {
       <span style="font-size:10px;color:#555;letter-spacing:0.12em;text-transform:uppercase">History window</span>
       <div style="display:flex;gap:4px">
         ${rangeOptions.map(([w,l]) => `<button class="chart-mode-btn ${volRangeWeeks===w?'active':''}"
-          onclick="document.getElementById('vol-range').value=${w};renderTraining()" style="font-size:10px;padding:4px 10px">${l}</button>`).join('')}
+          onclick="window.setVolRange(${w})" style="font-size:10px;padding:4px 10px">${l}</button>`).join('')}
       </div>
-      <input type="hidden" id="vol-range" value="${volRangeWeeks}">
+
       <span style="font-size:10px;color:#444;margin-left:4px">Most recent: week of ${fmtDate(latestWeek)}</span>
     </div>
 
@@ -5002,7 +5031,7 @@ function mountVolumeChart(userId) {
   if (!ctx) return;
   const ch = Chart.getChart(ctx); if (ch) ch.destroy();
   const weeklyVol = getWeeklyVolume(userId);
-  const volRangeWeeks = parseInt(document.getElementById('vol-range')?.value || 8);
+  // volRangeWeeks is module-level, set by window.setVolRange
   const weeks = Object.keys(weeklyVol).sort().slice(-volRangeWeeks);
   if (!weeks.length) return;
   const muscles = [...new Set(Object.values(weeklyVol).flatMap(w => Object.keys(w)))].sort();
@@ -5140,30 +5169,45 @@ window.confirmImport = async function(userId) {
 };
 
 // ── ADD SESSION MODAL ─────────────────────────────────────────
-window.logRestDay = async function(userId) {
-  const today = new Date().toISOString().split('T')[0];
+window.logRestDay = function(userId) {
+  const el = document.getElementById('confirmDialog');
+  el.style.display = 'flex';
   const sessions = getUserSessions(userId);
-  // Check if rest day already logged today
-  if (sessions.find(s => s.date === today && s.type === 'rest')) {
-    alert('Rest day already logged for today!');
-    return;
-  }
-  const note = prompt('Rest day note (optional):', '') ?? '';
-  const session = {
-    id: genId(), userId,
-    type: 'rest',
-    date: today,
-    label: 'Rest Day',
-    cycle: sessions[0]?.cycle || '',
-    block: sessions[0]?.block || '',
-    notes: note,
-    exercises: [],
+  const recentBlock = sessions.find(s=>s.type!=='rest')?.block || '';
+  const recentCycle = sessions.find(s=>s.type!=='rest')?.cycle || '';
+  el.innerHTML = `<div class="confirm-dialog"><div class="confirm-box" style="max-width:420px;text-align:left">
+    <h3 style="color:#69ff47;margin-bottom:18px">🛌 Log Rest Day</h3>
+    <div class="form-group"><label>Date</label><input type="date" id="rd-date" value="${new Date().toISOString().split('T')[0]}"></div>
+    <div class="form-group"><label>Notes (optional)</label><input type="text" id="rd-notes" placeholder="Recovery, travel, injury, etc."></div>
+    <div class="confirm-btns">
+      <button class="btn" id="rdSave" style="background:#69ff47;color:#000">Log Rest Day</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('confirmDialog').style.display='none'">Cancel</button>
+    </div>
+  </div></div>`;
+  document.getElementById('rdSave').onclick = async () => {
+    const date = document.getElementById('rd-date').value;
+    if (!date) return;
+    // Check duplicate
+    if (sessions.find(s => s.date === date && s.type === 'rest')) {
+      alert('Rest day already logged for this date.'); return;
+    }
+    const session = {
+      id: genId(), userId,
+      type: 'rest',
+      date,
+      label: 'Rest Day',
+      cycle: recentCycle,
+      block: recentBlock,
+      notes: document.getElementById('rd-notes').value || '',
+      exercises: [],
+    };
+    if (!trainingSessions[userId]) trainingSessions[userId] = [];
+    trainingSessions[userId].unshift(session);
+    await saveTrainingSession(session);
+    el.style.display = 'none';
+    trainingSubTab = 'log';
+    renderTraining();
   };
-  if (!trainingSessions[userId]) trainingSessions[userId] = [];
-  trainingSessions[userId].unshift(session);
-  await saveTrainingSession(session);
-  trainingSubTab = 'log';
-  renderTraining();
 };
 
 window.showAddSession = function(userId) {
