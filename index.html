@@ -461,6 +461,10 @@ let db = null, users = [], activeUserId = null;
 let chartLine = null, chartBar = null, chartPct = null, userChart = null;
 let currentView = "dashboard";
 let compareStartDate = "", compareEndDate = "";
+// ── CACHE OBJECTS (declared early — used before function definitions) ────────
+const _earnedCache = {}; // memoized getEarnedBadges results, hoisted
+const _tonnageCache = {}; // memoized session tonnage, hoisted
+function clearEarnedCache() { Object.keys(_earnedCache).forEach(k => delete _earnedCache[k]); }
 
 // ── SETTINGS (persisted to localStorage) ──────────────────
 const DEFAULTS = { showTrueWeight:true, showSpikes:true, showLockedBadges:false, showRestDays:true, darkMode:true, theme:'original', consistencyWeeks:8 };
@@ -2225,7 +2229,6 @@ window.confirmDelPR = function(userId, liftKey, entryId, weight) {
 // ── BADGES ─────────────────────────────────────────────────
 // Groups: weight_loss, consistency, bench, squat, deadlift, ohp, total
 // ── TONNAGE CACHE ─────────────────────────────────────────────────────────────
-const _tonnageCache = {};
 function getTonnage(userId) {
   if (_tonnageCache[userId] !== undefined) return _tonnageCache[userId];
   let t = 0;
@@ -2412,7 +2415,6 @@ const BADGE_GROUPS = [
 
 function getAllBadges() { return BADGE_GROUPS.flatMap(g=>g.badges.map(b=>({...b,groupColor:g.color,groupId:g.id}))); }
 
-const _earnedCache = {};
 function getEarnedBadges(u) {
   if (_earnedCache[u.id]) return _earnedCache[u.id];
   const manual = u.manualBadges || {};
@@ -2423,7 +2425,6 @@ function getEarnedBadges(u) {
   _earnedCache[u.id] = result;
   return result;
 }
-function clearEarnedCache() { Object.keys(_earnedCache).forEach(k => delete _earnedCache[k]); }
 
 function renderBadges(u) {
   const cd = u.customBadgeDefs || {};
